@@ -68,6 +68,7 @@ static BOOL gEnabled = YES;
 static int gPort = 5901;
 static int gTvCtlPort = 0;        // port for control connections (0 = disabled)
 static NSString *gBindHost = nil; // optional bind address from CLI/config
+static NSString *gBindHost6 = nil; // optional IPv6-only bind (prefs); used when BindHost is IPv4
 static NSString *gDesktopName = @"TrollVNC";
 static BOOL gViewOnly = NO;
 static double gKeepAliveSec = 0.0; // 15..86400
@@ -490,6 +491,17 @@ static void parseDaemonOptions(void) {
         } else {
             gBindHost = nil;
             TVLog(@"-daemon: BindHost empty; cleared to default (any)");
+        }
+    }
+
+    NSString *bindHost6 = [prefs objectForKey:@"BindHost6"];
+    if ([bindHost6 isKindOfClass:[NSString class]]) {
+        if (bindHost6.length > 0) {
+            gBindHost6 = bindHost6;
+            TVLog(@"-daemon: BindHost6=%@", gBindHost6);
+        } else {
+            gBindHost6 = nil;
+            TVLog(@"-daemon: BindHost6 empty; cleared");
         }
     }
 
@@ -4576,6 +4588,21 @@ static void setupRfbScreen(int argc, const char *argv[]) {
     TVBindHostKind hostKind = tvClassifyBindHost(gBindHost, &v4Addr, &v6Addr);
     if (hostKind == kTVBindHostKindIPv4) {
         gScreen->listenInterface = v4Addr;
+        in_addr_t bind6Dummy = 0;
+        struct in6_addr bind6Addr;
+        memset(&bind6Addr, 0, sizeof(bind6Addr));
+        TVBindHostKind bind6Kind = tvClassifyBindHost(gBindHost6, &bind6Dummy, &bind6Addr);
+        if (bind6Kind == kTVBindHostKindIPv6) {
+            char ifaceBuf[INET6_ADDRSTRLEN];
+            const char *iface = inet_ntop(AF_INET6, &bind6Addr, ifaceBuf, sizeof(ifaceBuf));
+            if (!iface) {
+                TVPrintError("Failed to normalize IPv6 bind host (BindHost6)");
+                exit(EXIT_FAILURE);
+            }
+            gScreen->listen6Interface = strdup(iface);
+        } else {
+            gScreen->ipv6port = 0;
+        }
     } else if (hostKind == kTVBindHostKindIPv6) {
         char ifaceBuf[INET6_ADDRSTRLEN];
         const char *iface = inet_ntop(AF_INET6, &v6Addr, ifaceBuf, sizeof(ifaceBuf));
@@ -4705,7 +4732,9 @@ static void setupRfbHttpServer(void) {
     gScreen->httpEnableProxyConnect = TRUE; // always allow CONNECT if HTTP is enabled
     if (gHttpPort > 0) {
         gScreen->httpPort = gHttpPort; // enable HTTP on specified port
-        gScreen->http6Port = gHttpPort;
+        if (gScreen->ipv6port > 0) {
+            gScreen->http6Port = gHttpPort;
+        }
         if (gHttpDirOverride) {
             // Use override absolute path
             gScreen->httpDir = strdup(gHttpDirOverride);
